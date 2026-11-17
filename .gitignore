@@ -1,4 +1,21 @@
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Pytest
 .pytest_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
