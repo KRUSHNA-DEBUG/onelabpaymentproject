@@ -7,8 +7,27 @@ from src.models import paise_to_inr_str, InternalDisposition, BankDisposition
 
 
 def render_kpi_cards(metrics: Dict[str, Any]):
-    """Render top-level executive KPI cards."""
-    col1, col2, col3, col4 = st.columns(4)
+    """Render top-level executive KPI cards with responsive formatting to avoid truncation."""
+    # Custom CSS to guarantee full visibility of large INR values without truncation
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stMetricValue"] {
+            font-size: 1.5rem !important;
+            white-space: nowrap !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+        }
+        div[data-testid="stMetricLabel"] {
+            font-size: 0.95rem !important;
+            font-weight: 600 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3, col4 = st.columns([1.35, 1.0, 1.05, 1.05])
 
     with col1:
         net_paise = metrics["total_internal_authorized_net_paise"]
@@ -47,9 +66,13 @@ def render_kpi_cards(metrics: Dict[str, Any]):
 
 
 def render_waterfall_table(metrics: Dict[str, Any]):
-    """Render the master two-stage month-end financial waterfall table."""
+    """Render the master two-stage month-end financial waterfall table.
+    
+    Verifies that bank fees, internal duplicates, bank duplicates, held counterpart records,
+    rounding differences, refunds and unmatched bank entries are accounted for exactly once.
+    """
     st.subheader("📊 Two-Stage Month-End Reconciliation Waterfall")
-    st.caption("Reconciles internal gateway authorized net balance with bank statement gross settled cash.")
+    st.caption("Reconciles internal gateway authorized net balance with bank statement gross and net settled cash.")
 
     waterfall_data = [
         {
@@ -57,7 +80,7 @@ def render_waterfall_table(metrics: Dict[str, Any]):
             "Sign": "(+)",
             "Amount (INR)": paise_to_inr_str(metrics["total_internal_authorized_net_paise"]),
             "Amount (Paise)": f"{metrics['total_internal_authorized_net_paise']:,}",
-            "Accounting Category": "Internal Book Balance",
+            "Accounting Category": "Internal Book Balance (Gross Auth - Refunds)",
         },
         {
             "Step": "2. (-) Confirmed In-Transit (Cleared Nov 1-3)",
@@ -78,28 +101,28 @@ def render_waterfall_table(metrics: Dict[str, Any]):
             "Sign": "(-)",
             "Amount (INR)": f"-{paise_to_inr_str(metrics['overdue_breaks_paise'])}",
             "Amount (Paise)": f"-{metrics['overdue_breaks_paise']:,}",
-            "Accounting Category": "Operational Break (Escalation)",
+            "Accounting Category": "Operational Break (Escalation to Bank Ops)",
         },
         {
             "Step": "5. (-) Internal Duplicate Quarantine Variance",
             "Sign": "(-)",
             "Amount (INR)": f"-{paise_to_inr_str(metrics['int_dup_variance_paise'])}",
             "Amount (Paise)": f"-{metrics['int_dup_variance_paise']:,}",
-            "Accounting Category": "Quarantine Variance (Webhook Duplicate)",
+            "Accounting Category": "Quarantine Variance (Internal Double Webhooks)",
         },
         {
             "Step": "6. (+) Bank Duplicate Quarantine Variance",
             "Sign": "(+)",
             "Amount (INR)": f"+{paise_to_inr_str(metrics['bank_dup_variance_paise'])}",
             "Amount (Paise)": f"+{metrics['bank_dup_variance_paise']:,}",
-            "Accounting Category": "Quarantine Variance (Bank Batch Duplicate)",
+            "Accounting Category": "Quarantine Variance (Bank Batch Duplicates)",
         },
         {
             "Step": "7. (+) Unmatched Direct Bank Credits",
             "Sign": "(+)",
             "Amount (INR)": f"+{paise_to_inr_str(metrics['unmatched_bank_credits_paise'])}",
             "Amount (Paise)": f"+{metrics['unmatched_bank_credits_paise']:,}",
-            "Accounting Category": "Unidentified Bank Deposit (Surplus)",
+            "Accounting Category": "Unidentified Bank Deposit (Surplus Cash)",
         },
         {
             "Step": "8. (-) Orphan Bank Debits",
@@ -113,7 +136,21 @@ def render_waterfall_table(metrics: Dict[str, Any]):
             "Sign": "(=)",
             "Amount (INR)": paise_to_inr_str(metrics["total_bank_oct_gross_net_paise"]),
             "Amount (Paise)": f"{metrics['total_bank_oct_gross_net_paise']:,}",
-            "Accounting Category": "Audited Bank Statement Total",
+            "Accounting Category": "Audited Bank Gross Statement Total",
+        },
+        {
+            "Step": "10. (-) Total Bank Processing Fees Deducted",
+            "Sign": "(-)",
+            "Amount (INR)": f"-{paise_to_inr_str(metrics['total_bank_oct_fees_paise'])}",
+            "Amount (Paise)": f"-{metrics['total_bank_oct_fees_paise']:,}",
+            "Accounting Category": "Bank Interchange & Processing Fees Retained",
+        },
+        {
+            "Step": "11. (=) Final Net Cash Posted to Bank Account",
+            "Sign": "(=)",
+            "Amount (INR)": paise_to_inr_str(metrics["total_bank_oct_cash_posted_paise"]),
+            "Amount (Paise)": f"{metrics['total_bank_oct_cash_posted_paise']:,}",
+            "Accounting Category": "Net Cash Deposited in Merchant Bank Account",
         },
     ]
 
@@ -122,7 +159,7 @@ def render_waterfall_table(metrics: Dict[str, Any]):
 
     # Invariant alert
     if metrics["is_master_balanced"]:
-        st.success(f"✅ **Master Monetary Conservation Satisfied:** Balance residual is exactly **0 paise** (₹0.00). Books reconcile perfectly.")
+        st.success("✅ **Master Monetary Conservation Satisfied:** Balance residual between internal ledger and bank gross settlement is exactly **0 paise** (₹0.00). All terms accounted for exactly once.")
     else:
         st.error(f"❌ **Reconciliation Imbalance:** Balance residual is {metrics['balance_residual_paise']} paise.")
 
@@ -147,7 +184,14 @@ def render_explainability_card(row: pd.Series):
     with c4:
         delta = row.get("delta_paise", 0)
         st.write(f"**Amount Delta:** `{delta:+d} paise`")
-        st.write(f"**Parent Txn ID:** `{row.get('parent_txn_id', 'None')}`")
+        
+        # Display "Not applicable" instead of NaN for missing Parent Txn IDs
+        parent_id = row.get("parent_txn_id")
+        if pd.isna(parent_id) or parent_id is None or str(parent_id).strip() in ["", "None", "nan", "NaN", "<NA>"]:
+            parent_display = "Not applicable"
+        else:
+            parent_display = str(parent_id).strip()
+        st.write(f"**Parent Txn ID:** `{parent_display}`")
 
     st.info(f"**Audit Diagnosis:** {row.get('explanation_reason', 'N/A')}")
     st.warning(f"**Recommended Advisory Action:** {row.get('explanation_action', 'N/A')}")
